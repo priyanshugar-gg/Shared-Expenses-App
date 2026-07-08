@@ -35,6 +35,7 @@ INSTALLED_APPS = [
 
     # Local apps (added in the next step, listed here so it's easy to see what's coming)
     "groups",
+    "expenses",
 ]
 
 MIDDLEWARE = [
