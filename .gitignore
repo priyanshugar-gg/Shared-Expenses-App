@@ -1,0 +1,29 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Django
+*.log
+db.sqlite3
+staticfiles/
+media/
+
+# Environment secrets
+.env
+.env.local
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
