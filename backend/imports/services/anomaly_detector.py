@@ -110,3 +110,202 @@ def detect_payer_name_normalization(row_data, group_members):
             "severity": "low",
         }]
     return []
+
+import difflib
+
+
+def _normalize_description(description):
+    """
+    Lowercases, strips, and collapses whitespace/punctuation so
+    "Dinner at Marina Bites" and "dinner - marina bites" compare
+    as equivalent. Deliberately simple (no stemming/NLP) - this is
+    for catching obvious formatting-only differences, not doing
+    semantic matching.
+    """
+    if not description:
+        return ""
+    normalized = description.lower().strip()
+    for char in ["-", "_", ",", "."]:
+        normalized = normalized.replace(char, " ")
+    return " ".join(normalized.split())
+STOPWORDS = {"at", "the", "a", "an", "for", "in", "on", "of"}
+
+
+def _description_similarity(description_a, description_b):
+    """
+    Word-set (Jaccard) similarity: the proportion of words shared
+    between two descriptions, ignoring order and common filler words
+    ("at", "the", ...). Chosen over character-sequence similarity
+    (difflib.SequenceMatcher) specifically because expense
+    descriptions commonly get reworded/reordered by different people
+    logging the same event - e.g. "Dinner at Thalassa" vs "Thalassa
+    dinner" - which character-sequence comparison scores as very
+    dissimilar (~0.48) despite being obviously the same words,
+    just reordered. Word-set comparison correctly scores this as a
+    near-perfect match instead.
+    """
+    words_a = set(_normalize_description(description_a).split()) - STOPWORDS
+    words_b = set(_normalize_description(description_b).split()) - STOPWORDS
+
+    if not words_a or not words_b:
+        return 0.0
+
+    intersection = words_a & words_b
+    union = words_a | words_b
+    return len(intersection) / len(union)
+
+def _row_signature(row_data):
+    """
+    (date, normalized payer, amount, normalized description) - used
+    as the exact-duplicate key. Payer is normalized the same way as
+    detect_payer_name_normalization, so "Dev" and "dev" collapse to
+    the same signature.
+    """
+    payer = (row_data.get("paid_by") or "").strip().lower()
+    description = _normalize_description(row_data.get("description"))
+    amount = row_data.get("amount")
+    date = row_data.get("date")
+    return (date, payer, amount, description)
+
+
+def detect_exact_duplicates(all_rows, similarity_threshold=0.85):
+    """
+    Same date, same normalized payer, same amount, and a HIGHLY similar
+    description (>= similarity_threshold) - treated as the same expense
+    logged twice with only cosmetic wording differences (casing,
+    punctuation, minor word choice like "at" vs a dash). The first
+    occurrence proceeds; later ones are flagged and default to skip.
+
+    Deliberately stricter on amount/payer (must match exactly) than on
+    description (allowed to vary) - a duplicate entry of the same
+    expense would never have a different amount or payer, only
+    different formatting of the same description.
+    """
+    results = {}
+    rows_list = sorted(all_rows, key=lambda r: r["row_number"])
+    kept_rows = []  # rows confirmed NOT duplicates of anything earlier
+
+    for row in rows_list:
+        data = row["data"]
+        payer = (data.get("paid_by") or "").strip().lower()
+        amount = data.get("amount")
+        date = data.get("date")
+        description = _normalize_description(data.get("description"))
+
+        found_duplicate_of = None
+        for kept in kept_rows:
+            kept_data = kept["data"]
+            kept_payer = (kept_data.get("paid_by") or "").strip().lower()
+            if kept_data.get("date") != date or kept_payer != payer or kept_data.get("amount") != amount:
+                continue
+            similarity = _description_similarity(data.get("description"), kept_data.get("description"))
+            if similarity >= similarity_threshold:
+                found_duplicate_of = kept["row_number"]
+                break
+
+        if found_duplicate_of:
+            results[row["row_number"]] = [{
+                "type": "exact_duplicate",
+                "message": (
+                    f"Same date, payer, and amount as row {found_duplicate_of}, with only "
+                    f"cosmetic wording differences in the description - likely the same "
+                    f"expense logged twice."
+                ),
+                "severity": "medium",
+            }]
+        else:
+            kept_rows.append(row)
+
+    return results
+
+
+def detect_suspected_duplicates(all_rows, similarity_threshold=0.7):
+    """
+    Same date + similar (not necessarily identical) description, but a
+    DIFFERENT amount or payer - can't be auto-resolved (which one is
+    correct?), so both rows are flagged for manual review. Rows already
+    caught by detect_exact_duplicates are skipped here to avoid
+    double-flagging the same pair under two different anomaly types.
+    """
+    results = {}
+    rows_list = sorted(all_rows, key=lambda r: r["row_number"])
+    exact_duplicate_rows = set(detect_exact_duplicates(all_rows).keys())
+
+    for i, row_a in enumerate(rows_list):
+        if row_a["row_number"] in exact_duplicate_rows:
+            continue
+        for row_b in rows_list[i + 1:]:
+            if row_b["row_number"] in exact_duplicate_rows:
+                continue
+
+            data_a, data_b = row_a["data"], row_b["data"]
+            if data_a.get("date") != data_b.get("date"):
+                continue
+
+            similarity = _description_similarity(data_a.get("description"), data_b.get("description"))
+
+            amount_differs = data_a.get("amount") != data_b.get("amount")
+            payer_differs = (data_a.get("paid_by") or "").strip().lower() != (data_b.get("paid_by") or "").strip().lower()
+
+            if similarity >= similarity_threshold and (amount_differs or payer_differs):
+                message = (
+                    f"Similar description to row {{other}} on the same date "
+                    f"({similarity:.0%} similar) but "
+                    f"{'amount' if amount_differs else ''}"
+                    f"{' and ' if amount_differs and payer_differs else ''}"
+                    f"{'payer' if payer_differs else ''} differ - possibly the same "
+                    f"event logged twice with conflicting details."
+                )
+                anomaly_a = {"type": "suspected_duplicate", "message": message.format(other=row_b["row_number"]), "severity": "medium"}
+                anomaly_b = {"type": "suspected_duplicate", "message": message.format(other=row_a["row_number"]), "severity": "medium"}
+                results.setdefault(row_a["row_number"], []).append(anomaly_a)
+                results.setdefault(row_b["row_number"], []).append(anomaly_b)
+
+    return results
+
+
+def detect_settlement_pattern(row_data):
+    """
+    A single-recipient split_with (not the payer themselves) is
+    structurally a transfer, not a shared expense. Checks BOTH the
+    description and notes fields for explicit repayment language,
+    since the source data sometimes puts that language directly in
+    the description (e.g. "Rohan paid Aisha back") rather than notes.
+    """
+    split_with_raw = row_data.get("split_with") or ""
+    participants = [name.strip() for name in split_with_raw.split(";") if name.strip()]
+    payer = (row_data.get("paid_by") or "").strip()
+
+    if len(participants) != 1:
+        return []
+    if participants[0].lower() == payer.lower():
+        return []
+
+    combined_text = f"{row_data.get('description') or ''} {row_data.get('notes') or ''}".lower()
+    words = combined_text.split()
+    is_explicit = (
+        ("paid" in words and "back" in words)
+        or "repaid" in combined_text
+        or "reimburse" in combined_text
+    )
+
+    if is_explicit:
+        return [{
+            "type": "settlement_misclassified",
+            "message": (
+                f"'{row_data.get('description')}' looks like a direct payment from "
+                f"{payer} to {participants[0]}, not a shared expense - will be recorded "
+                f"as a settlement instead of an expense."
+            ),
+            "severity": "medium",
+        }]
+    else:
+        return [{
+            "type": "possible_settlement",
+            "message": (
+                f"'{row_data.get('description')}' has only one participant ({participants[0]}) "
+                f"besides the payer - may be a direct payment rather than a shared expense, "
+                f"but isn't explicit enough to auto-reclassify. Needs manual confirmation."
+            ),
+            "severity": "medium",
+        }]
