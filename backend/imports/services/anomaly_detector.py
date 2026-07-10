@@ -439,3 +439,192 @@ def detect_missing_currency(row_data):
             "severity": "medium",
         }]
     return []
+
+from datetime import datetime, timedelta
+
+
+MONTH_NAMES = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+]
+
+
+def detect_ambiguous_date_format(row_data):
+    """
+    Detects when the SOURCE SPREADSHEET'S AUTHOR flagged their own date
+    as ambiguous, via a note like "is this April 5 or May 4?". This is
+    NOT a structural check on the parsed date value - by the time
+    openpyxl hands us a row, Excel has already resolved whichever
+    day/month interpretation it guessed, and that resolved value is
+    indistinguishable from any other valid date. The only surviving
+    signal is the human annotation left in the notes field, so that's
+    what we detect on. A structural check (e.g. "day <= 12") would
+    false-positive on roughly 40% of all real dates and isn't usable.
+    """
+    notes = row_data.get("notes") or ""
+    has_question_mark = "?" in notes
+    has_month_word = any(month in notes.lower() for month in MONTH_NAMES)
+
+    if has_question_mark and has_month_word:
+        return [{
+            "type": "ambiguous_date_format",
+            "message": (
+                f"The source data's own notes flag this date as ambiguous: '{notes}'. "
+                f"The date as parsed cannot be trusted - needs manual entry."
+            ),
+            "severity": "high",
+        }]
+    return []
+
+
+def detect_implausible_date(row_data, reference_date_range):
+    """
+    Flags a date far outside the plausible range of the rest of the
+    dataset (e.g. a typo'd year like 2014 instead of 2026).
+    reference_date_range: (earliest_plausible, latest_plausible) -
+    computed by the caller from the full dataset's actual date spread
+    plus a buffer, rather than hardcoded here, so this detector isn't
+    tied to any specific year.
+    """
+    date = row_data.get("date")
+    if date is None:
+        return []
+
+    if hasattr(date, "date"):
+        date = date.date()
+
+    earliest, latest = reference_date_range
+    if date < earliest or date > latest:
+        return [{
+            "type": "implausible_date",
+            "message": f"Date {date} falls outside the plausible range for this dataset ({earliest} to {latest}) - likely a typo.",
+            "severity": "high",
+        }]
+    return []
+
+
+def detect_zero_amount(row_data):
+    """
+    A zero-amount expense has no financial effect (splits of zero
+    change nothing), so it's safe to import, but still surfaced -
+    "never silently" applies even to harmless-looking rows.
+    """
+    amount = row_data.get("amount")
+    if amount == 0:
+        return [{
+            "type": "zero_amount",
+            "message": "Amount is zero - has no effect on any balance, but flagged for visibility.",
+            "severity": "low",
+        }]
+    return []
+
+
+def detect_inactive_member_in_split(row_data, group_members):
+    """
+    Checks every participant in split_with against their membership's
+    is_active_on(date) - this is the direct technical answer to Sam's
+    complaint ("why would March electricity affect my balance") and
+    Meera's situation (charged for expenses after she moved out).
+
+    Per the locked policy: the inactive member is excluded and the
+    split is recomputed among the remaining active members, logged as
+    a HIGH severity anomaly (this changes real numbers, unlike a
+    low-severity cosmetic flag) - never silently applied without
+    being surfaced in the report.
+    """
+    date = row_data.get("date")
+    if date is None:
+        return []
+    if hasattr(date, "date"):
+        date = date.date()
+
+    split_with_raw = row_data.get("split_with") or ""
+    participant_names = [name.strip() for name in split_with_raw.split(";") if name.strip()]
+
+    inactive_participants = []
+    for name in participant_names:
+        member = resolve_member(name, group_members)
+        if member is not None and not member.is_active_on(date):
+            inactive_participants.append(member.user.username)
+
+    if inactive_participants:
+        return [{
+            "type": "inactive_member_in_split",
+            "message": (
+                f"{', '.join(inactive_participants)} were not active group members on {date} "
+                f"but appear in split_with. Will be excluded and the split recalculated among "
+                f"the remaining active members."
+            ),
+            "severity": "high",
+        }]
+    return []
+
+
+def detect_split_type_details_contradiction(row_data):
+    """
+    split_type=equal doesn't use split_details at all - if it's
+    present anyway, that's a contradiction worth flagging even though
+    it has no numeric effect on an equal split (every participant gets
+    the same share regardless of what split_details says).
+    """
+    if row_data.get("split_type") == "equal" and row_data.get("split_details"):
+        return [{
+            "type": "split_type_details_contradiction",
+            "message": (
+                f"split_type is 'equal' but split_details contains "
+                f"'{row_data.get('split_details')}' - this data is ignored for an equal "
+                f"split (has no numeric effect), but the contradiction is worth noting."
+            ),
+            "severity": "low",
+        }]
+    return []
+
+
+def detect_excess_decimal_precision(row_data):
+    """
+    Currency should never have more than 2 decimal places (paise/
+    cents). More than that suggests a floating-point artifact or
+    data-entry error upstream - rounded to 2dp using standard
+    rounding, flagged so the correction is visible, not silent.
+    """
+    amount = row_data.get("amount")
+    if amount is None:
+        return []
+
+    amount_str = f"{amount:.10f}".rstrip("0")
+    decimal_places = len(amount_str.split(".")[-1]) if "." in amount_str else 0
+
+    if decimal_places > 2:
+        return [{
+            "type": "excess_decimal_precision",
+            "message": f"Amount {amount} has {decimal_places} decimal places - will be rounded to 2 (nearest paisa).",
+            "severity": "low",
+        }]
+    return []
+
+
+def compute_plausible_date_range(all_rows, buffer_days=180):
+    """
+    Derives a plausible date range from the dataset's OWN dates
+    (median-ish spread + a generous buffer), rather than hardcoding
+    a specific year - keeps detect_implausible_date usable on any
+    future dataset, not just this one.
+    """
+    dates = []
+    for row in all_rows:
+        date = row["data"].get("date")
+        if date is not None:
+            if hasattr(date, "date"):
+                date = date.date()
+            dates.append(date)
+
+    if not dates:
+        return None, None
+
+    dates.sort()
+    # Use the median-adjacent dates (middle 80%) to avoid one bad date
+    # skewing the range we compute the buffer from.
+    trimmed = dates[len(dates) // 10: -max(1, len(dates) // 10)] or dates
+    earliest = min(trimmed) - timedelta(days=buffer_days)
+    latest = max(trimmed) + timedelta(days=buffer_days)
+    return earliest, latest

@@ -37,8 +37,15 @@ MEMBER_TIMELINE = {
     "Rohan": ("2026-02-01", None),
     "Priya": ("2026-02-01", None),
     "Meera": ("2026-02-01", "2026-03-31"),  # moved out end of March
-    "Dev": ("2026-02-15", "2026-02-20"),    # joined only for the trip
-    "Sam": ("2026-04-15", None),            # moved in mid-April
+    # Dev's actual window derived from the real CSV: appears in a
+    # casual Feb 8 dinner ("Dev visiting for the weekend") through
+    # the Goa trip which runs through March 12.
+    "Dev": ("2026-02-08", "2026-03-12"),
+    # Sam's shared-expense participation starts April 10 in the real
+    # data; his April 8 deposit payment predates official membership,
+    # which is fine - it's handled as a Settlement (a plain transfer),
+    # not an Expense split, so it doesn't require active membership.
+    "Sam": ("2026-04-10", None),
 }
 
 

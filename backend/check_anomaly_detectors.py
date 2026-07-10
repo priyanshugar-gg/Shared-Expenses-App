@@ -60,3 +60,48 @@ for row in rows:
     anomalies = detect_missing_currency(row["data"])
     if anomalies:
         print(row["row_number"], row["data"].get("description"), "->", [a["type"] for a in anomalies])
+
+from imports.services.anomaly_detector import (
+    detect_ambiguous_date_format, detect_implausible_date, detect_zero_amount,
+    detect_inactive_member_in_split, detect_split_type_details_contradiction,
+    detect_excess_decimal_precision, compute_plausible_date_range,
+)
+
+date_range = compute_plausible_date_range(rows)
+print("Computed plausible date range:", date_range)
+
+print("--- Ambiguous date format ---")
+for row in rows:
+    anomalies = detect_ambiguous_date_format(row["data"])
+    if anomalies:
+        print(row["row_number"], row["data"].get("description"), "->", [a["type"] for a in anomalies])
+
+print("--- Implausible dates ---")
+for row in rows:
+    anomalies = detect_implausible_date(row["data"], date_range)
+    if anomalies:
+        print(row["row_number"], row["data"].get("description"), row["data"].get("date"), "->", [a["type"] for a in anomalies])
+
+print("--- Zero amount ---")
+for row in rows:
+    anomalies = detect_zero_amount(row["data"])
+    if anomalies:
+        print(row["row_number"], row["data"].get("description"), "->", [a["type"] for a in anomalies])
+
+print("--- Inactive member in split ---")
+for row in rows:
+    anomalies = detect_inactive_member_in_split(row["data"], members)
+    if anomalies:
+        print(row["row_number"], row["data"].get("description"), "->", [a["type"] for a in anomalies])
+
+print("--- Split type/details contradiction ---")
+for row in rows:
+    anomalies = detect_split_type_details_contradiction(row["data"])
+    if anomalies:
+        print(row["row_number"], row["data"].get("description"), "->", [a["type"] for a in anomalies])
+
+print("--- Excess decimal precision ---")
+for row in rows:
+    anomalies = detect_excess_decimal_precision(row["data"])
+    if anomalies:
+        print(row["row_number"], row["data"].get("amount"), "->", [a["type"] for a in anomalies])
