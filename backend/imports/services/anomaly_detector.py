@@ -309,3 +309,133 @@ def detect_settlement_pattern(row_data):
             ),
             "severity": "medium",
         }]
+    
+def _parse_semicolon_pairs(raw_string):
+    """
+    Parses strings like "Aisha 30; Rohan 30; Priya 30; Meera 20" into
+    [("Aisha", "30"), ("Rohan", "30"), ...]. Used for both percentage
+    and share split_details, which share this same "Name number;
+    Name number" format in the source data.
+    """
+    if not raw_string:
+        return []
+    pairs = []
+    for chunk in raw_string.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.rsplit(" ", 1)
+        if len(parts) == 2:
+            name, value = parts
+            pairs.append((name.strip(), value.strip()))
+    return pairs
+
+
+def detect_percentage_mismatch(row_data):
+    """
+    Percentages in split_details must sum to exactly 100. We do NOT
+    auto-normalize a mismatched sum (e.g. rescaling 110% down to
+    100%) - see DECISIONS.md: rescaling silently changes what each
+    person agreed to pay, and we have no way to know which single
+    value was the actual typo. Always flagged for manual review.
+    """
+    if row_data.get("split_type") != "percentage":
+        return []
+
+    pairs = _parse_semicolon_pairs(row_data.get("split_details"))
+    if not pairs:
+        return []
+
+    try:
+        total = sum(float(value.rstrip("%")) for _, value in pairs)
+    except ValueError:
+        return [{
+            "type": "percentage_unparseable",
+            "message": f"Could not parse percentage values from split_details: '{row_data.get('split_details')}'.",
+            "severity": "high",
+        }]
+
+    if abs(total - 100) > 0.01:
+        breakdown = ", ".join(f"{name} {value}%" for name, value in pairs)
+        return [{
+            "type": "percentage_mismatch",
+            "message": (
+                f"Percentages sum to {total}%, not 100% ({breakdown}). "
+                f"Cannot determine which value is incorrect - needs manual correction."
+            ),
+            "severity": "high",
+        }]
+    return []
+
+
+def detect_non_member_participant(row_data, group_members):
+    """
+    Every name in split_with must resolve to an actual group member.
+    A name that doesn't (e.g. "Dev's friend Kabir") means the split
+    can't be validly computed - we don't know how to divide the
+    expense among people the group doesn't recognize.
+    """
+    split_with_raw = row_data.get("split_with") or ""
+    participant_names = [name.strip() for name in split_with_raw.split(";") if name.strip()]
+
+    unresolved = [
+        name for name in participant_names
+        if resolve_member(name, group_members) is None
+    ]
+
+    if unresolved:
+        return [{
+            "type": "non_member_participant",
+            "message": (
+                f"split_with includes {', '.join(unresolved)}, who don't match any "
+                f"group member. The split can't be computed until this is resolved - "
+                f"either add them as a member or remove them from this expense."
+            ),
+            "severity": "high",
+        }]
+    return []
+
+
+def detect_negative_amount(row_data):
+    """
+    A negative amount could be a legitimate refund/reversal, or a
+    data-entry error. We use the description/notes as a weak signal:
+    explicit "refund" language gets a low-severity informational flag
+    (proceeds as a negative adjustment); anything else is flagged high
+    severity for manual review, since we can't tell those two cases
+    apart with confidence otherwise.
+    """
+    amount = row_data.get("amount")
+    if amount is None or amount >= 0:
+        return []
+
+    combined_text = f"{row_data.get('description') or ''} {row_data.get('notes') or ''}".lower()
+    is_refund = "refund" in combined_text
+
+    if is_refund:
+        return [{
+            "type": "negative_amount_refund",
+            "message": f"Negative amount ({amount}) with 'refund' in the description - treated as a legitimate reversal.",
+            "severity": "low",
+        }]
+    else:
+        return [{
+            "type": "negative_amount_unexplained",
+            "message": f"Negative amount ({amount}) with no indication it's a refund - could be a data-entry error. Needs manual confirmation.",
+            "severity": "high",
+        }]
+
+
+def detect_missing_currency(row_data):
+    """
+    Currency field empty. The import service will default this to the
+    group's base currency (INR) when committing, but that default is
+    always surfaced here, never applied silently.
+    """
+    if not row_data.get("currency"):
+        return [{
+            "type": "missing_currency",
+            "message": "Currency field is empty - will default to INR unless corrected.",
+            "severity": "medium",
+        }]
+    return []
