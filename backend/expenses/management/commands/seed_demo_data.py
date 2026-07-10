@@ -3,11 +3,17 @@ Seeds the database with a realistic demo Flatmates group: memberships
 with real join/leave dates (Meera left end of March, Sam joined mid-
 April), and one expense per split type, generated via split_service.py
 so the ExpenseSplit rows are calculated the same way the real API
-will calculate them — not hand-typed test data that could drift from
+will calculate them - not hand-typed test data that could drift from
 the actual algorithm.
 
-Safe to re-run: wipes and recreates only the "Flatmates" demo data,
-does not touch unrelated groups.
+Usernames are capitalized (Aisha, Rohan, ...) to match the real
+casing used throughout the actual expenses_export.xlsx data - this
+matters for the import pipeline's name-normalization detector, which
+compares CSV payer names against real group member usernames.
+
+Safe to re-run: deletes existing Flatmates data in dependency order
+(splits/expenses/settlements before memberships, since those are
+PROTECT-ed foreign keys) then recreates it from scratch.
 
 Usage: python manage.py seed_demo_data
 """
@@ -27,12 +33,12 @@ from expenses.services.split_service import (
 )
 
 MEMBER_TIMELINE = {
-    "aisha": ("2026-02-01", None),
-    "rohan": ("2026-02-01", None),
-    "priya": ("2026-02-01", None),
-    "meera": ("2026-02-01", "2026-03-31"),  # moved out end of March
-    "dev": ("2026-02-15", "2026-02-20"),    # joined only for the trip
-    "sam": ("2026-04-15", None),            # moved in mid-April
+    "Aisha": ("2026-02-01", None),
+    "Rohan": ("2026-02-01", None),
+    "Priya": ("2026-02-01", None),
+    "Meera": ("2026-02-01", "2026-03-31"),  # moved out end of March
+    "Dev": ("2026-02-15", "2026-02-20"),    # joined only for the trip
+    "Sam": ("2026-04-15", None),            # moved in mid-April
 }
 
 
@@ -41,8 +47,16 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        # Clean slate for the demo group only
-        Group.objects.filter(name="Flatmates").delete()
+        # Clean slate for the demo group only. Must delete in dependency
+        # order - Expense/ExpenseSplit/Settlement PROTECT their
+        # GroupMembership FKs, so those have to go first, or the
+        # cascade from deleting Group hits the PROTECT and fails.
+        existing_group = Group.objects.filter(name="Flatmates").first()
+        if existing_group:
+            ExpenseSplit.objects.filter(expense__group=existing_group).delete()
+            Expense.objects.filter(group=existing_group).delete()
+            Settlement.objects.filter(group=existing_group).delete()
+            existing_group.delete()
 
         admin_user, _ = User.objects.get_or_create(
             username="admin", defaults={"is_staff": True, "is_superuser": True}
@@ -61,11 +75,11 @@ class Command(BaseCommand):
             self.stdout.write(f"  Added member: {membership}")
 
         # --- Equal split: Groceries, active members only on this date ---
-        active_ids = ["aisha", "rohan", "priya", "meera"]  # Meera still active mid-Feb
+        active_ids = ["Aisha", "Rohan", "Priya", "Meera"]  # Meera still active mid-Feb
         expense1 = Expense.objects.create(
             group=group,
             description="Groceries - BigBasket",
-            paid_by=memberships["aisha"],
+            paid_by=memberships["Aisha"],
             date="2026-02-15",
             currency=Currency.INR,
             amount=Decimal("900.00"),
@@ -86,7 +100,7 @@ class Command(BaseCommand):
         expense2 = Expense.objects.create(
             group=group,
             description="Electricity bill",
-            paid_by=memberships["rohan"],
+            paid_by=memberships["Rohan"],
             date="2026-02-20",
             currency=Currency.INR,
             amount=Decimal("1000.00"),
@@ -95,9 +109,9 @@ class Command(BaseCommand):
             source=ExpenseSource.MANUAL,
         )
         unequal_amounts = {
-            memberships["rohan"].id: Decimal("400.00"),
-            memberships["priya"].id: Decimal("300.00"),
-            memberships["aisha"].id: Decimal("300.00"),
+            memberships["Rohan"].id: Decimal("400.00"),
+            memberships["Priya"].id: Decimal("300.00"),
+            memberships["Aisha"].id: Decimal("300.00"),
         }
         shares = calculate_unequal_split(expense2.amount, unequal_amounts)
         for member_id, share in shares.items():
@@ -110,7 +124,7 @@ class Command(BaseCommand):
         expense3 = Expense.objects.create(
             group=group,
             description="Trip fuel",
-            paid_by=memberships["dev"],
+            paid_by=memberships["Dev"],
             date="2026-02-18",
             currency=Currency.INR,
             amount=Decimal("3000.00"),
@@ -119,9 +133,9 @@ class Command(BaseCommand):
             source=ExpenseSource.MANUAL,
         )
         share_units = {
-            memberships["aisha"].id: 1,
-            memberships["rohan"].id: 2,
-            memberships["priya"].id: 1,
+            memberships["Aisha"].id: 1,
+            memberships["Rohan"].id: 2,
+            memberships["Priya"].id: 1,
         }
         shares = calculate_share_split(expense3.amount, share_units)
         for member_id, share in shares.items():
@@ -133,8 +147,8 @@ class Command(BaseCommand):
         # --- A settlement: Rohan pays Aisha back ---
         Settlement.objects.create(
             group=group,
-            paid_by=memberships["rohan"],
-            paid_to=memberships["aisha"],
+            paid_by=memberships["Rohan"],
+            paid_to=memberships["Aisha"],
             amount=Decimal("200.00"),
             currency=Currency.INR,
             date="2026-02-25",
