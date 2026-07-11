@@ -15,7 +15,7 @@ export default function LoginPage() {
     try {
       await login(username, password);
       navigate("/");
-    } catch (err: any) {
+    } catch {
       setError("Login failed. Check your credentials.");
     }
   }
