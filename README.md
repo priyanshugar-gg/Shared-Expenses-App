@@ -6,7 +6,7 @@ A full-stack shared expenses tracker built for the Spreetail internship take-hom
 
 - **Backend:** Django 6, Django REST Framework, SimpleJWT, PostgreSQL 18, psycopg3
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS v4
-- **Deployment:** Railway (backend + Postgres), Vercel (frontend)
+- **Deployment:** Render (backend + Postgres), Vercel (frontend)
 
 ## AI Tool Used
 
