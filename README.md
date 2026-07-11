@@ -46,7 +46,15 @@ DB_HOST=localhost
 DB_PORT=5432
 CORS_ALLOWED_ORIGINS=http://localhost:5173
 
-Create the Postgres database and user (see `SCOPE.md` for exact SQL), then:
+Create the Postgres database and user:
+```sql
+CREATE DATABASE shared_expenses_db;
+CREATE USER shared_expenses_user WITH PASSWORD 'your-password';
+GRANT ALL PRIVILEGES ON DATABASE shared_expenses_db TO shared_expenses_user;
+\c shared_expenses_db
+GRANT ALL ON SCHEMA public TO shared_expenses_user;
+```
+Then:
 
 ```bash
 python manage.py migrate
@@ -66,6 +74,9 @@ ALTER USER shared_expenses_user CREATEDB;
 ```bash
 cd frontend
 npm install
+
+npm run lint    # should report zero problems
+npm run build   # production build check
 ```
 
 Create `frontend/.env`:
