@@ -2,6 +2,14 @@
 
 A full-stack shared expenses tracker built for the Spreetail internship take-home assignment. Handles group expense splitting (equal/unequal/percentage/share), multi-currency support, time-bounded group membership, debt settlement, and a CSV/XLSX import pipeline with automated anomaly detection.
 
+## Live Deployment
+
+- **App:** https://shared-expenses-app-brown.vercel.app
+- **API:** https://shared-expenses-app-2eoe.onrender.com/api
+- **Demo login:** username `Aisha`, password `testpass123` (or register your own account)
+
+Note: Render's free tier spins down after inactivity — the first request after idle may take 30-50 seconds to respond.
+
 ## Tech Stack
 
 - **Backend:** Django 6, Django REST Framework, SimpleJWT, PostgreSQL 18, psycopg3
